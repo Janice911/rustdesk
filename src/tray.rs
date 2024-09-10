@@ -10,6 +10,12 @@ use std::time::Duration;
 
 pub fn start_tray() {
     if crate::ui_interface::get_builtin_option(hbb_common::config::keys::OPTION_HIDE_TRAY) == "Y" {
+        #[cfg(target_os = "windows")]
+        {
+            // 对于 Windows，直接返回，不创建托盘图标
+            return;
+        }
+        // 对于 macOS 或其他平台，保持线程运行以避免退出
         #[cfg(target_os = "macos")]
         {
             loop {
@@ -21,8 +27,11 @@ pub fn start_tray() {
             return;
         }
     }
+    
+    // 否则，创建托盘图标
     allow_err!(make_tray());
 }
+
 
 fn make_tray() -> hbb_common::ResultType<()> {
     // https://github.com/tauri-apps/tray-icon/blob/dev/examples/tao.rs
