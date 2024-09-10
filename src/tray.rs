@@ -9,27 +9,24 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub fn start_tray() {
+
     if crate::ui_interface::get_builtin_option(hbb_common::config::keys::OPTION_HIDE_TRAY) == "Y" {
-        #[cfg(target_os = "windows")]
-        {
-            // 对于 Windows，直接返回，不创建托盘图标
-            return;
-        }
-        // 对于 macOS 或其他平台，保持线程运行以避免退出
-        #[cfg(target_os = "macos")]
-        {
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(1));
-            }
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            return;
+    #[cfg(target_os = "windows")]
+    {
+        // 对于 Windows，直接返回，不创建托盘图标
+        return;
+    }
+    // 对于 macOS 或其他平台，保持线程运行以避免退出
+    #[cfg(target_os = "macos")]
+    {
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(1));
         }
     }
-    
-    // 否则，创建托盘图标
-    allow_err!(make_tray());
+    #[cfg(not(target_os = "macos"))]
+    {
+        return;
+    }
 }
 
 
