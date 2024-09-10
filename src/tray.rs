@@ -1,34 +1,20 @@
-use crate::client::translate;
-#[cfg(windows)]
-use crate::ipc::Data;
-#[cfg(windows)]
-use hbb_common::tokio;
-use hbb_common::{allow_err, log};
-use std::sync::{Arc, Mutex};
-#[cfg(windows)]
-use std::time::Duration;
-
 pub fn start_tray() {
-
     if crate::ui_interface::get_builtin_option(hbb_common::config::keys::OPTION_HIDE_TRAY) == "Y" {
-    #[cfg(target_os = "windows")]
-    {
-        // 对于 Windows，直接返回，不创建托盘图标
-        return;
-    }
-    // 对于 macOS 或其他平台，保持线程运行以避免退出
-    #[cfg(target_os = "macos")]
-    {
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
+        #[cfg(target_os = "macos")]
+        {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            return;
         }
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        return;
-    }
+    // Skip calling make_tray() on Windows
+    #[cfg(not(target_os = "windows"))]
+    allow_err!(make_tray());
 }
-
 
 fn make_tray() -> hbb_common::ResultType<()> {
     // https://github.com/tauri-apps/tray-icon/blob/dev/examples/tao.rs
@@ -38,6 +24,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
         menu::{Menu, MenuEvent, MenuItem},
         TrayIcon, TrayIconBuilder, TrayIconEvent as TrayEvent,
     };
+
     let icon;
     #[cfg(target_os = "macos")]
     {
@@ -45,7 +32,8 @@ fn make_tray() -> hbb_common::ResultType<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        icon = include_bytes!("../res/tray-icon.ico");
+        // Placeholder for non-macos platforms if needed
+        return Ok(());
     }
 
     let (icon_rgba, icon_width, icon_height) = {
@@ -85,8 +73,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
 
     let menu_channel = MenuEvent::receiver();
     let tray_channel = TrayEvent::receiver();
-    #[cfg(windows)]
-    let (ipc_sender, ipc_receiver) = std::sync::mpsc::channel::<Data>();
 
     let open_func = move || {
         if cfg!(not(feature = "flutter")) {
@@ -95,14 +81,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
         #[cfg(target_os = "macos")]
         crate::platform::macos::handle_application_should_open_untitled_file();
-        #[cfg(target_os = "windows")]
-        {
-            // Do not use "start uni link" way, it may not work on some Windows, and pop out error
-            // dialog, I found on one user's desktop, but no idea why, Windows is shit.
-            // Use `run_me` instead.
-            // `allow_multiple_instances` in `flutter/windows/runner/main.cpp` allows only one instance without args.
-            crate::run_me::<&str>(vec![]).ok();
-        }
         #[cfg(target_os = "linux")]
         if !std::process::Command::new("xdg-open")
             .arg(&crate::get_uri_prefix())
@@ -113,12 +91,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
     };
 
-    #[cfg(windows)]
-    std::thread::spawn(move || {
-        start_query_session_count(ipc_sender.clone());
-    });
-    #[cfg(windows)]
-    let mut last_click = std::time::Instant::now();
     #[cfg(target_os = "macos")]
     {
         use tao::platform::macos::EventLoopExtMacOS;
@@ -130,8 +102,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
         );
 
         if let tao::event::Event::NewEvents(tao::event::StartCause::Init) = event {
-            // We create the icon once the event loop is actually running
-            // to prevent issues like https://github.com/tauri-apps/tray-icon/issues/90
             let tray = TrayIconBuilder::new()
                 .with_menu(Box::new(tray_menu.clone()))
                 .with_tooltip(tooltip(0))
@@ -145,8 +115,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
                 }
             };
 
-            // We have to request a redraw here to have the icon actually show up.
-            // Tao only exposes a redraw method on the Window so we use core-foundation directly.
             #[cfg(target_os = "macos")]
             unsafe {
                 use core_foundation::runloop::{CFRunLoopGetMain, CFRunLoopWakeUp};
@@ -158,12 +126,6 @@ fn make_tray() -> hbb_common::ResultType<()> {
 
         if let Ok(event) = menu_channel.try_recv() {
             if event.id == quit_i.id() {
-                /* failed in windows, seems no permission to check system process
-                if !crate::check_process("--server", false) {
-                    *control_flow = ControlFlow::Exit;
-                    return;
-                }
-                */
                 if !crate::platform::uninstall_service(false, false) {
                     *control_flow = ControlFlow::Exit;
                 }
@@ -173,7 +135,7 @@ fn make_tray() -> hbb_common::ResultType<()> {
         }
 
         if let Ok(_event) = tray_channel.try_recv() {
-            #[cfg(target_os = "windows")]
+            #[cfg(target_os = "macos")]
             match _event {
                 TrayEvent::Click {
                     button,
@@ -183,26 +145,8 @@ fn make_tray() -> hbb_common::ResultType<()> {
                     if button == tray_icon::MouseButton::Left
                         && button_state == tray_icon::MouseButtonState::Up
                     {
-                        if last_click.elapsed() < std::time::Duration::from_secs(1) {
-                            return;
-                        }
                         open_func();
-                        last_click = std::time::Instant::now();
                     }
-                }
-                _ => {}
-            }
-        }
-
-        #[cfg(windows)]
-        if let Ok(data) = ipc_receiver.try_recv() {
-            match data {
-                Data::ControlledSessionCount(count) => {
-                    _tray_icon
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .map(|t| t.set_tooltip(Some(tooltip(count))));
                 }
                 _ => {}
             }
